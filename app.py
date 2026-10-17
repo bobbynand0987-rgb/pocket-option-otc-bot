@@ -118,5 +118,39 @@ def test_usage():
             "error": str(error)
         }, 500
 if __name__ == "__main__":
+    @app.route("/test-session")
+def test_session():
+    ssid = os.environ.get("POCKET_OPTION_SSID", "").strip()
+
+    if not ssid:
+        return {
+            "success": False,
+            "error": "POCKET_OPTION_SSID is missing"
+        }, 500
+
+    try:
+        api = PocketOption(ssid)
+        connected, error = api.connect()
+
+        if connected:
+            return {
+                "success": True,
+                "connected": True,
+                "message": "Pocket Option connection successful"
+            }
+
+        return {
+            "success": False,
+            "connected": False,
+            "error": str(error)
+        }, 502
+
+    except Exception as error:
+        return {
+            "success": False,
+            "connected": False,
+            "error": str(error)
+        }, 500
+        
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
