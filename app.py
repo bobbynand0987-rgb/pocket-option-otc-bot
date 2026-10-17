@@ -75,7 +75,47 @@ def test_otc():
             "error": str(error)
         }, 500
 
+@app.route("/test-usage")
+def test_usage():
+    api_key = os.environ.get("OTCHARTS_API_KEY", "").strip()
 
+    if not api_key:
+        return {
+            "success": False,
+            "error": "OTCHARTS_API_KEY is missing"
+        }, 500
+
+    url = "https://otcharts.com/v1/usage"
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        return {
+            "success": True,
+            "usage": data
+        }
+
+    except urllib.error.HTTPError as error:
+        return {
+            "success": False,
+            "http_status": error.code,
+            "error": error.read().decode("utf-8")
+        }, 502
+
+    except Exception as error:
+        return {
+            "success": False,
+            "error": str(error)
+        }, 500
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
