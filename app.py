@@ -2,6 +2,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+from pocketoptionapi.stable_api import PocketOption
 
 from flask import Flask
 
