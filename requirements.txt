@@ -1,3 +1,2 @@
 Flask
 gunicorn
-pocket-trader
