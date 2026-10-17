@@ -2,9 +2,10 @@ import os
 import json
 import urllib.request
 import urllib.error
-from pocketoptionapi.stable_api import PocketOption
 
 from flask import Flask
+from pocketoptionapi.stable_api import PocketOption
+
 
 app = Flask(__name__)
 
@@ -25,7 +26,7 @@ def status():
 
 @app.route("/test-otc")
 def test_otc():
-    api_key = os.environ.get("OTCHARTS_API_KEY")
+    api_key = os.environ.get("OTCHARTS_API_KEY", "").strip()
 
     if not api_key:
         return {
@@ -38,19 +39,23 @@ def test_otc():
     request = urllib.request.Request(
         url,
         headers={
-            "Authorization": "Bearer " + api_key
+            "Authorization": "Bearer " + api_key,
+            "User-Agent": "Mozilla/5.0"
         }
     )
 
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
 
         symbols = data.get("symbols", [])
 
         eurusd = next(
             (
-                item for item in symbols
+                item
+                for item in symbols
                 if item.get("symbol") == "EURUSD_otc"
             ),
             None
@@ -76,6 +81,7 @@ def test_otc():
             "error": str(error)
         }, 500
 
+
 @app.route("/test-usage")
 def test_usage():
     api_key = os.environ.get("OTCHARTS_API_KEY", "").strip()
@@ -98,7 +104,9 @@ def test_usage():
 
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
 
         return {
             "success": True,
@@ -117,32 +125,30 @@ def test_usage():
             "success": False,
             "error": str(error)
         }, 500
-  @app.route("/test-session")
+
+
+@app.route("/test-session")
 def test_session():
-    ssid = os.environ.get("POCKET_OPTION_SSID", "").strip()
+    ssid = os.environ.get(
+        "POCKET_OPTION_SSID", ""
+    ).strip()
 
     if not ssid:
         return {
             "success": False,
+            "connected": False,
             "error": "POCKET_OPTION_SSID is missing"
         }, 500
 
     try:
         api = PocketOption(ssid)
-        connected, error = api.connect()
-
-        if connected:
-            return {
-                "success": True,
-                "connected": True,
-                "message": "Pocket Option connection successful"
-            }
+        result = api.connect()
 
         return {
-            "success": False,
-            "connected": False,
-            "error": str(error)
-        }, 502
+            "success": True,
+            "connection_result": str(result),
+            "message": "Pocket Option connection test completed"
+        }
 
     except Exception as error:
         return {
@@ -150,8 +156,11 @@ def test_session():
             "connected": False,
             "error": str(error)
         }, 500
-        
+
+
 if __name__ == "__main__":
-     
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
