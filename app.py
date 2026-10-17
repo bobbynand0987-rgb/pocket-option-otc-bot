@@ -117,8 +117,7 @@ def test_usage():
             "success": False,
             "error": str(error)
         }, 500
-if __name__ == "__main__":
-    @app.route("/test-session")
+  @app.route("/test-session")
 def test_session():
     ssid = os.environ.get("POCKET_OPTION_SSID", "").strip()
 
@@ -152,5 +151,7 @@ def test_session():
             "error": str(error)
         }, 500
         
+if __name__ == "__main__":
+     
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
