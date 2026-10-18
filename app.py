@@ -7,21 +7,26 @@ import urllib.error
 from flask import Flask
 from pocketoptionapi.stable_api import PocketOption
 
-
-app = Flask(__name__)
 def parse_pocket_auth(raw_auth):
     if not raw_auth:
         raise ValueError("Pocket Option auth is missing")
 
     text = raw_auth.strip()
 
+    # Remove Socket.IO prefix
     if text.startswith("42"):
-        text = text[2:]
+        text = text[2:].strip()
 
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Copied auth frame is not valid raw JSON near column {e.colno}. "
+            "Do not manually add/remove quotes or brackets."
+        )
 
     if not isinstance(data, list) or len(data) < 2:
-        raise ValueError("Invalid Pocket Option auth format")
+        raise ValueError("Invalid Pocket Option auth structure")
 
     if data[0] != "auth" or not isinstance(data[1], dict):
         raise ValueError("Invalid Pocket Option auth message")
@@ -36,15 +41,10 @@ def parse_pocket_auth(raw_auth):
         "isChart"
     ]
 
-    missing = [
-        field for field in required
-        if field not in auth
-    ]
+    missing = [field for field in required if field not in auth]
 
     if missing:
-        raise ValueError(
-            "Missing auth fields: " + ", ".join(missing)
-        )
+        raise ValueError("Missing auth fields: " + ", ".join(missing))
 
     return auth
 
