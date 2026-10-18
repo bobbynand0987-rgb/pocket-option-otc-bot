@@ -6,6 +6,7 @@ import urllib.error
 
 from flask import Flask
 from pocketoptionapi.stable_api import PocketOption
+from pocketoptionapi.ws.client import WebsocketClient
 
 import logging
 
