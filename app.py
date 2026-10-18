@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import urllib.request
 import urllib.error
 
@@ -8,7 +9,44 @@ from pocketoptionapi.stable_api import PocketOption
 
 
 app = Flask(__name__)
+def parse_pocket_auth(raw_auth):
+    if not raw_auth:
+        raise ValueError("Pocket Option auth is missing")
 
+    text = raw_auth.strip()
+
+    if text.startswith("42"):
+        text = text[2:]
+
+    data = json.loads(text)
+
+    if not isinstance(data, list) or len(data) < 2:
+        raise ValueError("Invalid Pocket Option auth format")
+
+    if data[0] != "auth" or not isinstance(data[1], dict):
+        raise ValueError("Invalid Pocket Option auth message")
+
+    auth = data[1]
+
+    required = [
+        "sessionToken",
+        "uid",
+        "lang",
+        "currentUrl",
+        "isChart"
+    ]
+
+    missing = [
+        field for field in required
+        if field not in auth
+    ]
+
+    if missing:
+        raise ValueError(
+            "Missing auth fields: " + ", ".join(missing)
+        )
+
+    return auth
 
 @app.route("/")
 def home():
@@ -173,3 +211,29 @@ def test_session():
             "connected": False,
             "error": str(error)
         }, 500
+        
+@app.route("/check-auth-format")
+def check_auth_format():
+    raw_auth = os.environ.get("POCKET_OPTION_SSID", "").strip()
+
+    try:
+        auth = parse_pocket_auth(raw_auth)
+
+        return {
+            "success": True,
+            "format": "current",
+            "fields": sorted(auth.keys()),
+            "has_sessionToken": bool(auth.get("sessionToken")),
+            "has_uid": bool(auth.get("uid"))
+        }
+
+    except Exception as error:
+        return {
+            "success": False,
+            "error": str(error)
+        }, 400
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
