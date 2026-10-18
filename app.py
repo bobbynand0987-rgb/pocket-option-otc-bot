@@ -7,6 +7,10 @@ import urllib.error
 from flask import Flask
 from pocketoptionapi.stable_api import PocketOption
 
+import logging
+
+logging.getLogger("pocketoptionapi.ws.client").setLevel(logging.WARNING)
+
 app = Flask(__name__)
 
 def parse_pocket_auth(raw_auth):
