@@ -7,6 +7,8 @@ import urllib.error
 from flask import Flask
 from pocketoptionapi.stable_api import PocketOption
 
+app = Flask(__name__)
+
 def parse_pocket_auth(raw_auth):
     if not raw_auth:
         raise ValueError("Pocket Option auth is missing")
