@@ -21,17 +21,16 @@ app = Flask(__name__)
 OTC_SYMBOL = "EURUSD_otc"
 TIMEFRAME_SECONDS = 60
 
-# Live signal only needs 50 candles.
+# Live signal
 CANDLE_LIMIT = 50
 
-# Historical backtest uses 1000 candles.
+# Historical backtest
 BACKTEST_CANDLE_LIMIT = 1000
 
-# Reject live data older than this.
+# Maximum acceptable age of newest feed candle
 MAX_CANDLE_AGE_SECONDS = 180
 
-# OTCharts timestamps currently appear about
-# 2 hours ahead of actual UTC in your feed.
+# Current observed OTCharts timestamp correction
 OTCHARTS_TIME_OFFSET_HOURS = float(
     os.environ.get(
         "OTCHARTS_TIME_OFFSET_HOURS",
@@ -88,6 +87,7 @@ def download_otc_candles(limit):
     ).strip()
 
     if not api_key:
+
         raise Exception(
             "OTCHARTS_API_KEY is missing"
         )
@@ -137,12 +137,13 @@ def download_otc_candles(limit):
     )
 
     if not candles:
+
         raise Exception(
             "No OTC candles returned"
         )
 
     # ==================================================
-    # CLEAN AND VALIDATE
+    # CLEAN CANDLES
     # ==================================================
 
     valid_candles = []
@@ -151,7 +152,7 @@ def download_otc_candles(limit):
 
         try:
 
-            clean_candle = {
+            valid_candles.append({
                 "time":
                     int(candle["time"]),
 
@@ -166,11 +167,7 @@ def download_otc_candles(limit):
 
                 "close":
                     float(candle["close"])
-            }
-
-            valid_candles.append(
-                clean_candle
-            )
+            })
 
         except (
             KeyError,
@@ -186,7 +183,7 @@ def download_otc_candles(limit):
             "Not enough valid OTC candles"
         )
 
-    # Analysis.py expects oldest -> newest.
+    # Analysis.py expects oldest -> newest
 
     valid_candles.sort(
         key=lambda candle:
@@ -197,7 +194,7 @@ def download_otc_candles(limit):
 
 
 # ======================================================
-# LIVE CANDLES
+# GET LIVE OTC CANDLES
 # ======================================================
 
 def get_otc_candles():
@@ -233,12 +230,12 @@ def check_candle_gaps(candles):
             - previous_time
         )
 
-        # Normal 1-minute candle difference = 60 sec.
-
         if difference != TIMEFRAME_SECONDS:
 
             gaps.append({
-                "index": i,
+                "index":
+                    i,
+
                 "difference_seconds":
                     difference
             })
@@ -274,12 +271,81 @@ def convert_otcharts_time(timestamp):
 
 
 # ======================================================
+# GET COMPLETED CANDLES
+# ======================================================
+
+def get_completed_candles(
+    candles,
+    current_utc
+):
+
+    if not candles:
+
+        raise Exception(
+            "No candles available"
+        )
+
+    latest_candle = candles[-1]
+
+    (
+        latest_raw_datetime,
+        latest_corrected_datetime
+    ) = convert_otcharts_time(
+        latest_candle["time"]
+    )
+
+    # Candle timestamp is treated as candle start.
+    latest_candle_end = (
+        latest_corrected_datetime
+        + timedelta(
+            seconds=TIMEFRAME_SECONDS
+        )
+    )
+
+    latest_candle_complete = (
+        current_utc
+        >= latest_candle_end
+    )
+
+    if latest_candle_complete:
+
+        completed_candles = candles
+
+    else:
+
+        # Remove currently forming candle.
+        completed_candles = candles[:-1]
+
+    if len(completed_candles) < 35:
+
+        raise Exception(
+            "Not enough completed candles "
+            "for analysis"
+        )
+
+    return {
+        "candles":
+            completed_candles,
+
+        "latest_candle_complete":
+            latest_candle_complete,
+
+        "latest_raw_datetime":
+            latest_raw_datetime,
+
+        "latest_corrected_datetime":
+            latest_corrected_datetime,
+
+        "latest_candle_end":
+            latest_candle_end
+    }
+
+
+# ======================================================
 # SIGNAL CONFIDENCE
 # ======================================================
 
 def get_confidence(analysis):
-
-    # Prefer confidence from Analysis.py.
 
     if (
         analysis.get("confidence")
@@ -311,8 +377,6 @@ def get_confidence(analysis):
 
             pass
 
-    # Fallback calculation.
-
     confirmations = int(
         analysis.get(
             "confirmations",
@@ -328,6 +392,7 @@ def get_confidence(analysis):
     )
 
     if total <= 0:
+
         return 0
 
     confidence = round(
@@ -348,7 +413,7 @@ def get_confidence(analysis):
 
 
 # ======================================================
-# CREATE TELEGRAM SIGNAL MESSAGE
+# CREATE SIGNAL MESSAGE
 # ======================================================
 
 def create_signal_message(
@@ -378,13 +443,17 @@ def otc_signal():
     try:
 
         # ==============================================
-        # DOWNLOAD 50 LIVE CANDLES
+        # DOWNLOAD LIVE CANDLES
         # ==============================================
 
         candles = get_otc_candles()
 
+        current_utc = datetime.now(
+            timezone.utc
+        )
+
         # ==============================================
-        # CHECK GAPS
+        # CHECK ALL RECEIVED CANDLES FOR GAPS
         # ==============================================
 
         gaps = check_candle_gaps(
@@ -392,7 +461,7 @@ def otc_signal():
         )
 
         # ==============================================
-        # LATEST CANDLE
+        # NEWEST FEED CANDLE
         # ==============================================
 
         latest_candle = candles[-1]
@@ -408,12 +477,8 @@ def otc_signal():
             latest_timestamp
         )
 
-        current_utc = datetime.now(
-            timezone.utc
-        )
-
         # ==============================================
-        # CANDLE AGE
+        # FEED FRESHNESS
         # ==============================================
 
         candle_age_seconds = (
@@ -426,10 +491,6 @@ def otc_signal():
             2
         )
 
-        # ==============================================
-        # FRESHNESS
-        # ==============================================
-
         data_fresh = (
             0
             <= candle_age_seconds
@@ -437,11 +498,54 @@ def otc_signal():
         )
 
         # ==============================================
-        # ANALYSIS
+        # REMOVE FORMING CANDLE
+        # ==============================================
+
+        completed_info = (
+            get_completed_candles(
+                candles,
+                current_utc
+            )
+        )
+
+        analysis_candles = (
+            completed_info["candles"]
+        )
+
+        latest_candle_complete = (
+            completed_info[
+                "latest_candle_complete"
+            ]
+        )
+
+        # ==============================================
+        # LAST COMPLETED CANDLE
+        # ==============================================
+
+        completed_candle = (
+            analysis_candles[-1]
+        )
+
+        (
+            completed_raw_datetime,
+            completed_corrected_datetime
+        ) = convert_otcharts_time(
+            completed_candle["time"]
+        )
+
+        completed_candle_end = (
+            completed_corrected_datetime
+            + timedelta(
+                seconds=TIMEFRAME_SECONDS
+            )
+        )
+
+        # ==============================================
+        # ANALYZE COMPLETED CANDLES ONLY
         # ==============================================
 
         analysis = analyze_candles(
-            candles
+            analysis_candles
         )
 
         signal = str(
@@ -479,8 +583,11 @@ def otc_signal():
             )
 
             if buy_score >= sell_score:
+
                 signal = "BUY"
+
             else:
+
                 signal = "SELL"
 
         # ==============================================
@@ -501,13 +608,12 @@ def otc_signal():
                 )
             )
 
-            reason = "OTC data valid"
+            reason = (
+                "OTC data valid - "
+                "completed candles only"
+            )
 
         else:
-
-            # Keep technical direction for debugging,
-            # but don't send a trading message when
-            # market data fails validation.
 
             message = None
 
@@ -551,7 +657,10 @@ def otc_signal():
                 "1 minute",
 
             "expiry_reference":
-                "1 minute",
+                "next 1-minute candle",
+
+            "prediction_target":
+                "next completed candle",
 
             "signal":
                 signal,
@@ -574,6 +683,12 @@ def otc_signal():
             "candles_received":
                 len(candles),
 
+            "completed_candles_used":
+                len(analysis_candles),
+
+            "latest_candle_complete":
+                latest_candle_complete,
+
             "candle_gaps":
                 len(gaps),
 
@@ -594,6 +709,12 @@ def otc_signal():
 
             "candle_age_minutes":
                 candle_age_minutes,
+
+            "analysis_candle_time_utc":
+                completed_corrected_datetime.isoformat(),
+
+            "analysis_candle_end_utc":
+                completed_candle_end.isoformat(),
 
             "timestamp_offset_hours":
                 OTCHARTS_TIME_OFFSET_HOURS,
@@ -659,26 +780,29 @@ def backtest():
     try:
 
         # ==============================================
-        # DOWNLOAD 1000 HISTORICAL CANDLES
+        # DOWNLOAD 1000 CANDLES
         # ==============================================
 
         candles = download_otc_candles(
             BACKTEST_CANDLE_LIMIT
         )
 
-        # ==============================================
-        # CHECK DATA
-        # ==============================================
-
         if len(candles) < 100:
 
             return {
-                "success": False,
+                "success":
+                    False,
+
                 "error":
                     "Not enough historical candles",
+
                 "candles_received":
                     len(candles)
             }, 502
+
+        # ==============================================
+        # CHECK GAPS
+        # ==============================================
 
         gaps = check_candle_gaps(
             candles
@@ -710,7 +834,7 @@ def backtest():
                 "1 minute",
 
             "expiry":
-                "1 minute",
+                "next 1-minute candle",
 
             "source":
                 "OTCharts",
