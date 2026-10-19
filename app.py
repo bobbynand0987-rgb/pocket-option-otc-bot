@@ -254,7 +254,7 @@ def test_forex():
         "https://api.twelvedata.com/time_series"
         "?symbol=EUR/USD"
         "&interval=1min"
-        "&outputsize=5"
+        "&outputsize=50"
         "&apikey=" + api_key
     )
 
