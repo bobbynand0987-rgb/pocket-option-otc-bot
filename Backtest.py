@@ -1,236 +1,193 @@
 from Analysis import analyze_candles
 
-
 MIN_HISTORY = 35
 TRAIN_RATIO = 0.70
 
 
-# ======================================================
-# HELPERS
-# ======================================================
-
-def ema(values, period):
-    multiplier = 2 / (period + 1)
-    result = values[0]
-
-    for value in values[1:]:
-        result = (
-            value * multiplier
-            + result * (1 - multiplier)
-        )
-
-    return result
+def safe_rate(wins, losses):
+    total = wins + losses
+    return round((wins / total) * 100, 2) if total else 0
 
 
-def calculate_rsi(values, period=14):
-    if len(values) < period + 1:
-        return 50.0
+# ------------------------------------------------------
+# SELECTIVE STRATEGIES
+# Return None = skip this trade
+# ------------------------------------------------------
 
-    gains = []
-    losses = []
-
-    for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
-
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-
-    gains = gains[-period:]
-    losses = losses[-period:]
-
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-
-    if avg_loss == 0:
-        return 100.0
-
-    rs = avg_gain / avg_loss
-
-    return 100 - (
-        100 / (1 + rs)
-    )
-
-
-def get_market_values(history):
-    closes = [
-        float(candle["close"])
-        for candle in history
-    ]
-
-    price = closes[-1]
-
-    ema9 = ema(
-        closes[-35:],
-        9
-    )
-
-    ema21 = ema(
-        closes[-35:],
-        21
-    )
-
-    rsi = calculate_rsi(
-        closes,
-        14
-    )
+def original_all(history):
+    a = analyze_candles(history)
 
     return {
-        "price": price,
-        "ema9": ema9,
-        "ema21": ema21,
-        "rsi": rsi
+        "signal": a["signal"],
+        "confidence": int(a.get("confidence", 0))
     }
 
 
-# ======================================================
-# STRATEGIES
-# ======================================================
+def confidence_80_plus(history):
+    a = analyze_candles(history)
 
-def strategy_original(history):
-    analysis = analyze_candles(
-        history
-    )
+    confidence = int(a.get("confidence", 0))
+
+    if confidence < 80:
+        return None
 
     return {
-        "signal":
-            analysis["signal"],
-
-        "strength":
-            int(
-                analysis.get(
-                    "confidence",
-                    0
-                )
-            )
+        "signal": a["signal"],
+        "confidence": confidence
     }
 
 
-def strategy_ema(history):
-    data = get_market_values(
-        history
-    )
+def confidence_100_only(history):
+    a = analyze_candles(history)
 
-    if data["ema9"] >= data["ema21"]:
-        signal = "BUY"
-    else:
-        signal = "SELL"
+    confidence = int(a.get("confidence", 0))
+
+    if confidence != 100:
+        return None
 
     return {
-        "signal": signal,
-        "strength": 0
+        "signal": a["signal"],
+        "confidence": confidence
     }
 
 
-def strategy_ema_rsi(history):
-    data = get_market_values(
-        history
-    )
+def trend_macd_rsi(history):
+    a = analyze_candles(history)
 
-    bullish_trend = (
-        data["ema9"]
-        > data["ema21"]
-    )
+    signal = a["signal"]
 
-    bearish_trend = (
-        data["ema9"]
-        < data["ema21"]
-    )
+    ema9 = float(a["ema9"])
+    ema21 = float(a["ema21"])
+    rsi = float(a["rsi"])
+    macd = float(a["macd"])
+    macd_signal = float(a["macd_signal"])
 
     if (
-        bullish_trend
-        and data["rsi"] >= 50
+        signal == "BUY"
+        and ema9 > ema21
+        and macd > macd_signal
+        and rsi >= 52
     ):
-        signal = "BUY"
+        return {
+            "signal": "BUY",
+            "confidence": int(a.get("confidence", 0))
+        }
 
-    elif (
-        bearish_trend
-        and data["rsi"] < 50
+    if (
+        signal == "SELL"
+        and ema9 < ema21
+        and macd < macd_signal
+        and rsi <= 48
     ):
-        signal = "SELL"
+        return {
+            "signal": "SELL",
+            "confidence": int(a.get("confidence", 0))
+        }
 
-    else:
-        # Always produce a direction.
-        signal = (
-            "BUY"
-            if data["rsi"] >= 50
-            else "SELL"
-        )
-
-    return {
-        "signal": signal,
-        "strength": 0
-    }
+    return None
 
 
-def strategy_momentum(history):
-    closes = [
-        float(candle["close"])
-        for candle in history
-    ]
+def strong_trend(history):
+    a = analyze_candles(history)
 
-    current = closes[-1]
+    signal = a["signal"]
 
-    previous = closes[-4]
+    ema9 = float(a["ema9"])
+    ema21 = float(a["ema21"])
+    price = float(a["price"])
 
-    if current >= previous:
-        signal = "BUY"
-    else:
-        signal = "SELL"
+    if price == 0:
+        return None
 
-    return {
-        "signal": signal,
-        "strength": 0
-    }
+    separation = abs(
+        ema9 - ema21
+    ) / price
+
+    # 0.02% EMA separation
+    minimum_separation = 0.0002
+
+    if separation < minimum_separation:
+        return None
+
+    if signal == "BUY" and ema9 > ema21:
+        return {
+            "signal": "BUY",
+            "confidence": int(a.get("confidence", 0))
+        }
+
+    if signal == "SELL" and ema9 < ema21:
+        return {
+            "signal": "SELL",
+            "confidence": int(a.get("confidence", 0))
+        }
+
+    return None
 
 
-def strategy_mean_reversion(history):
-    data = get_market_values(
-        history
-    )
+def strong_combination(history):
+    a = analyze_candles(history)
 
-    # Short-term overbought/oversold
-    # contrarian test.
+    signal = a["signal"]
+    confidence = int(a.get("confidence", 0))
 
-    if data["rsi"] >= 60:
-        signal = "SELL"
+    ema9 = float(a["ema9"])
+    ema21 = float(a["ema21"])
+    rsi = float(a["rsi"])
+    macd = float(a["macd"])
+    macd_signal = float(a["macd_signal"])
+    price = float(a["price"])
 
-    elif data["rsi"] <= 40:
-        signal = "BUY"
+    if price == 0:
+        return None
 
-    else:
-        # Around neutral, use price vs EMA.
-        if data["price"] < data["ema21"]:
-            signal = "BUY"
-        else:
-            signal = "SELL"
+    separation = abs(
+        ema9 - ema21
+    ) / price
 
-    return {
-        "signal": signal,
-        "strength": 0
-    }
+    if confidence < 80:
+        return None
+
+    if separation < 0.00015:
+        return None
+
+    if (
+        signal == "BUY"
+        and ema9 > ema21
+        and macd > macd_signal
+        and rsi >= 52
+    ):
+        return {
+            "signal": "BUY",
+            "confidence": confidence
+        }
+
+    if (
+        signal == "SELL"
+        and ema9 < ema21
+        and macd < macd_signal
+        and rsi <= 48
+    ):
+        return {
+            "signal": "SELL",
+            "confidence": confidence
+        }
+
+    return None
 
 
 STRATEGIES = {
-    "original_5_vote":
-        strategy_original,
-
-    "ema_trend":
-        strategy_ema,
-
-    "ema_rsi":
-        strategy_ema_rsi,
-
-    "momentum_3":
-        strategy_momentum,
-
-    "rsi_mean_reversion":
-        strategy_mean_reversion
+    "original_all": original_all,
+    "confidence_80_plus": confidence_80_plus,
+    "confidence_100_only": confidence_100_only,
+    "trend_macd_rsi": trend_macd_rsi,
+    "strong_trend": strong_trend,
+    "strong_combination": strong_combination
 }
 
 
-# ======================================================
-# TEST ONE STRATEGY
-# ======================================================
+# ------------------------------------------------------
+# TEST STRATEGY
+# ------------------------------------------------------
 
 def test_strategy(
     candles,
@@ -242,6 +199,7 @@ def test_strategy(
     wins = 0
     losses = 0
     draws = 0
+    skipped = 0
 
     buy_wins = 0
     buy_losses = 0
@@ -249,56 +207,44 @@ def test_strategy(
     sell_wins = 0
     sell_losses = 0
 
-    trades = 0
+    signals = 0
 
-    strength_stats = {}
-
-    for i in range(
-        start_index,
-        end_index
-    ):
+    for i in range(start_index, end_index):
 
         if i + 1 >= len(candles):
             break
 
         history = candles[:i + 1]
 
-        result = strategy_function(
-            history
-        )
+        result = strategy_function(history)
+
+        if result is None:
+            skipped += 1
+            continue
 
         signal = str(
             result["signal"]
         ).upper()
 
-        strength = int(
-            result.get(
-                "strength",
-                0
-            )
-        )
-
-        if signal not in [
-            "BUY",
-            "SELL"
-        ]:
+        if signal not in ["BUY", "SELL"]:
+            skipped += 1
             continue
 
-        # Signal becomes available after candle i
-        # closes.
-        #
-        # We then evaluate the following
-        # 1-minute candle.
+        # Signal is generated after candle i closes.
+        # Entry is simulated at the NEXT candle open.
+        # Expiry is that same candle's close.
+
+        next_candle = candles[i + 1]
 
         entry_price = float(
-            candles[i]["close"]
+            next_candle["open"]
         )
 
         expiry_price = float(
-            candles[i + 1]["close"]
+            next_candle["close"]
         )
 
-        trades += 1
+        signals += 1
 
         if expiry_price > entry_price:
             actual = "BUY"
@@ -310,279 +256,199 @@ def test_strategy(
             actual = "DRAW"
 
         if actual == "DRAW":
-
-            outcome = "DRAW"
             draws += 1
+            continue
 
-        elif signal == actual:
+        if signal == actual:
 
-            outcome = "WIN"
             wins += 1
 
-        else:
-
-            outcome = "LOSS"
-            losses += 1
-
-        if signal == "BUY":
-
-            if outcome == "WIN":
+            if signal == "BUY":
                 buy_wins += 1
-
-            elif outcome == "LOSS":
-                buy_losses += 1
-
-        else:
-
-            if outcome == "WIN":
+            else:
                 sell_wins += 1
 
-            elif outcome == "LOSS":
-                sell_losses += 1
-
-        if strength not in strength_stats:
-
-            strength_stats[strength] = {
-                "wins": 0,
-                "losses": 0,
-                "draws": 0
-            }
-
-        if outcome == "WIN":
-            strength_stats[strength]["wins"] += 1
-
-        elif outcome == "LOSS":
-            strength_stats[strength]["losses"] += 1
-
         else:
-            strength_stats[strength]["draws"] += 1
+
+            losses += 1
+
+            if signal == "BUY":
+                buy_losses += 1
+            else:
+                sell_losses += 1
 
     decided = wins + losses
 
-    win_rate = (
-        round(
-            wins / decided * 100,
-            2
-        )
-        if decided > 0
-        else 0
-    )
-
-    buy_total = (
-        buy_wins
-        + buy_losses
-    )
-
-    sell_total = (
-        sell_wins
-        + sell_losses
-    )
-
-    buy_rate = (
-        round(
-            buy_wins / buy_total * 100,
-            2
-        )
-        if buy_total > 0
-        else 0
-    )
-
-    sell_rate = (
-        round(
-            sell_wins / sell_total * 100,
-            2
-        )
-        if sell_total > 0
-        else 0
-    )
-
     return {
-        "trades": trades,
-        "decided": decided,
+        "signals": signals,
+        "skipped": skipped,
         "wins": wins,
         "losses": losses,
         "draws": draws,
-        "win_rate": win_rate,
+
+        "decided_trades": decided,
+
+        "win_rate": safe_rate(
+            wins,
+            losses
+        ),
 
         "buy": {
             "wins": buy_wins,
             "losses": buy_losses,
-            "win_rate": buy_rate
+            "win_rate": safe_rate(
+                buy_wins,
+                buy_losses
+            )
         },
 
         "sell": {
             "wins": sell_wins,
             "losses": sell_losses,
-            "win_rate": sell_rate
+            "win_rate": safe_rate(
+                sell_wins,
+                sell_losses
+            )
         }
     }
 
 
-# ======================================================
-# MAIN STRATEGY COMPARISON
-# ======================================================
+# ------------------------------------------------------
+# MAIN BACKTEST
+# ------------------------------------------------------
 
 def run_backtest(candles):
 
     if len(candles) < 100:
-
         raise ValueError(
-            "Not enough candles for strategy test"
+            "Not enough candles for backtest"
         )
-
-    usable_start = MIN_HISTORY
 
     split_index = int(
-        len(candles)
-        * TRAIN_RATIO
+        len(candles) * TRAIN_RATIO
     )
-
-    # Make sure both sections have enough data.
-
-    if split_index <= usable_start:
-
-        raise ValueError(
-            "Not enough development candles"
-        )
-
-    if (
-        len(candles)
-        - split_index
-        < 50
-    ):
-
-        raise ValueError(
-            "Not enough test candles"
-        )
 
     development_results = {}
-    test_results = {}
+    unseen_results = {}
 
-    # ==================================================
-    # DEVELOPMENT SECTION
-    # ==================================================
+    # DEVELOPMENT DATA
 
-    for name, strategy in (
-        STRATEGIES.items()
-    ):
+    for name, strategy in STRATEGIES.items():
 
-        development_results[name] = (
-            test_strategy(
-                candles,
-                strategy,
-                usable_start,
-                split_index
-            )
+        development_results[name] = test_strategy(
+            candles,
+            strategy,
+            MIN_HISTORY,
+            split_index
         )
 
-    # ==================================================
-    # CHOOSE BEST USING DEVELOPMENT DATA ONLY
-    # ==================================================
+    # Select highest development win rate,
+    # but require at least 50 decided trades
+    # to reduce tiny-sample selection.
 
-    best_strategy_name = max(
-        development_results,
+    eligible = {
+        name: result
+        for name, result
+        in development_results.items()
+        if result["decided_trades"] >= 50
+    }
+
+    if not eligible:
+        raise ValueError(
+            "No strategy produced enough trades"
+        )
+
+    selected_strategy = max(
+        eligible,
         key=lambda name:
-            development_results[
-                name
-            ]["win_rate"]
+        eligible[name]["win_rate"]
     )
 
-    # ==================================================
-    # TEST EVERY STRATEGY ON UNSEEN SECTION
-    # ==================================================
+    # UNSEEN TEST DATA
 
-    for name, strategy in (
-        STRATEGIES.items()
-    ):
+    for name, strategy in STRATEGIES.items():
 
-        test_results[name] = (
-            test_strategy(
-                candles,
-                strategy,
-                split_index,
-                len(candles) - 1
-            )
+        unseen_results[name] = test_strategy(
+            candles,
+            strategy,
+            split_index,
+            len(candles) - 1
         )
 
-    best_development = (
+    selected_development = (
         development_results[
-            best_strategy_name
+            selected_strategy
         ]
     )
 
-    best_unseen = (
-        test_results[
-            best_strategy_name
+    selected_unseen = (
+        unseen_results[
+            selected_strategy
         ]
     )
 
-    # ==================================================
-    # ORIGINAL STRATEGY REFERENCE
-    # ==================================================
-
-    original_test = (
-        test_results[
-            "original_5_vote"
+    original_unseen = (
+        unseen_results[
+            "original_all"
         ]
     )
 
     improvement = round(
-        best_unseen["win_rate"]
-        - original_test["win_rate"],
+        selected_unseen["win_rate"]
+        - original_unseen["win_rate"],
         2
     )
 
-    # ==================================================
-    # FINAL REPORT
-    # ==================================================
-
     return {
-        "candles":
-            len(candles),
+        "candles": len(candles),
 
-        "method":
-            "70% development / 30% unseen test",
+        "timing_model":
+            "signal after close -> next candle open entry -> next candle close expiry",
 
-        "development_candles":
-            split_index,
-
-        "unseen_test_candles":
-            len(candles)
-            - split_index,
+        "split":
+            "70% development / 30% unseen",
 
         "development_results":
             development_results,
 
         "selected_strategy":
-            best_strategy_name,
+            selected_strategy,
 
-        "selected_strategy_development_win_rate":
-            best_development[
+        "selected_development_win_rate":
+            selected_development[
                 "win_rate"
             ],
 
-        "unseen_test_results":
-            test_results,
+        "selected_development_trades":
+            selected_development[
+                "decided_trades"
+            ],
 
-        "selected_strategy_unseen_win_rate":
-            best_unseen[
+        "unseen_results":
+            unseen_results,
+
+        "selected_unseen_win_rate":
+            selected_unseen[
                 "win_rate"
+            ],
+
+        "selected_unseen_trades":
+            selected_unseen[
+                "decided_trades"
             ],
 
         "original_unseen_win_rate":
-            original_test[
+            original_unseen[
                 "win_rate"
             ],
 
-        "unseen_improvement_percentage_points":
+        "improvement_percentage_points":
             improvement,
 
-        "warning":
+        "important":
             (
-                "The selected strategy was chosen "
-                "using development data only. "
-                "Unseen test performance is the "
-                "more important result and does "
-                "not guarantee future results."
+                "Higher historical win rate does not "
+                "guarantee future results. Small trade "
+                "samples should not be treated as reliable."
             )
     }
