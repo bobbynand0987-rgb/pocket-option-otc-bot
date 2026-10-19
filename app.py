@@ -763,6 +763,230 @@ def otc_signal():
 # START SERVER
 # ======================================================
 
+# ======================================================
+# OTC HISTORICAL BACKTEST
+# ======================================================
+
+@app.route("/backtest")
+def backtest():
+
+    try:
+
+        api_key = os.environ.get(
+            "OTCHARTS_API_KEY",
+            ""
+        ).strip()
+
+        if not api_key:
+            return {
+                "success": False,
+                "error": "OTCHARTS_API_KEY is missing"
+            }, 500
+
+
+        # ==============================================
+        # REQUEST 1000 OTC CANDLES
+        # ==============================================
+
+        params = urllib.parse.urlencode({
+            "venue": "otc",
+            "symbol": OTC_SYMBOL,
+            "tf": TIMEFRAME_SECONDS,
+            "limit": 1000
+        })
+
+
+        url = (
+            "https://otcharts.com/v1/candles?"
+            + params
+        )
+
+
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization":
+                    "Bearer " + api_key,
+
+                "User-Agent":
+                    "OTC-Backtest/1.0",
+
+                "Accept":
+                    "application/json"
+            }
+        )
+
+
+        with urllib.request.urlopen(
+            request,
+            timeout=30
+        ) as response:
+
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
+
+
+        candles = data.get(
+            "candles",
+            []
+        )
+
+
+        # ==============================================
+        # CLEAN CANDLES
+        # ==============================================
+
+        clean_candles = []
+
+
+        for candle in candles:
+
+            try:
+
+                clean_candles.append({
+                    "time":
+                        int(candle["time"]),
+
+                    "open":
+                        float(candle["open"]),
+
+                    "high":
+                        float(candle["high"]),
+
+                    "low":
+                        float(candle["low"]),
+
+                    "close":
+                        float(candle["close"])
+                })
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+
+        # ==============================================
+        # SORT OLDEST -> NEWEST
+        # ==============================================
+
+        clean_candles.sort(
+            key=lambda candle:
+                candle["time"]
+        )
+
+
+        if len(clean_candles) < 100:
+
+            return {
+                "success": False,
+                "error":
+                    "Not enough historical candles",
+                "candles_received":
+                    len(clean_candles)
+            }, 502
+
+
+        # ==============================================
+        # CHECK GAPS
+        # ==============================================
+
+        gaps = check_candle_gaps(
+            clean_candles
+        )
+
+
+        # ==============================================
+        # RUN BACKTEST
+        # ==============================================
+
+        report = run_backtest(
+            clean_candles
+        )
+
+
+        # ==============================================
+        # RESPONSE
+        # ==============================================
+
+        return {
+
+            "success": True,
+
+            "market":
+                "Pocket Option OTC",
+
+            "symbol":
+                OTC_SYMBOL,
+
+            "timeframe":
+                "1 minute",
+
+            "expiry":
+                "1 minute",
+
+            "source":
+                "OTCharts",
+
+            "candles_received":
+                len(clean_candles),
+
+            "candle_gaps":
+                len(gaps),
+
+            "backtest":
+                report,
+
+            "important":
+                (
+                    "Historical backtest results "
+                    "do not guarantee future performance."
+                )
+        }
+
+
+    except urllib.error.HTTPError as error:
+
+        try:
+
+            error_body = (
+                error.read()
+                .decode("utf-8")
+            )
+
+        except Exception:
+
+            error_body = str(error)
+
+
+        return {
+
+            "success": False,
+
+            "http_status":
+                error.code,
+
+            "error":
+                error_body
+
+        }, 502
+
+
+    except Exception as error:
+
+        return {
+
+            "success": False,
+
+            "error":
+                str(error)
+
+        }, 500
+
 if __name__ == "__main__":
 
     port = int(
