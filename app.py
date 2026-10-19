@@ -12,151 +12,208 @@ from Analysis import analyze_candles
 app = Flask(__name__)
 
 
+# ======================================================
+# SETTINGS
+# ======================================================
+
+OTC_SYMBOL = "EURUSD_otc"
+TIMEFRAME_SECONDS = 60
+CANDLE_LIMIT = 50
+
+# Maximum acceptable age of latest candle.
+MAX_CANDLE_AGE_SECONDS = 180
+
+
+# ======================================================
+# HOME
+# ======================================================
+
 @app.route("/")
 def home():
     return {
         "status": "online",
-        "bot": "Forex Signal Assistant",
-        "market": "Regular Forex",
-        "source": "Twelve Data"
+        "bot": "OTC Signal Assistant",
+        "market": "Pocket Option OTC",
+        "symbol": OTC_SYMBOL,
+        "timeframe": "1 minute",
+        "source": "OTCharts"
     }
 
+
+# ======================================================
+# STATUS
+# ======================================================
 
 @app.route("/status")
 def status():
     return {
         "status": "online",
-        "market": "Regular Forex",
-        "pair": "EUR/USD",
+        "market": "Pocket Option OTC",
+        "symbol": OTC_SYMBOL,
         "timeframe": "1 minute",
-        "source": "Twelve Data"
+        "source": "OTCharts"
     }
 
 
-@app.route("/test-forex")
-def test_forex():
+# ======================================================
+# GET OTC CANDLES
+# ======================================================
+
+def get_otc_candles():
 
     api_key = os.environ.get(
-        "TWELVE_DATA_API_KEY", ""
+        "OTCHARTS_API_KEY", ""
     ).strip()
 
     if not api_key:
-        return {
-            "success": False,
-            "error": "TWELVE_DATA_API_KEY is missing"
-        }, 500
+        raise Exception(
+            "OTCHARTS_API_KEY is missing"
+        )
 
-
-    # ==========================================
-    # TWELVE DATA REQUEST
-    # ==========================================
 
     params = urllib.parse.urlencode({
-        "symbol": "EUR/USD",
-        "interval": "1min",
-        "outputsize": 50,
-        "timezone": "UTC",
-        "apikey": api_key
+        "venue": "otc",
+        "symbol": OTC_SYMBOL,
+        "tf": TIMEFRAME_SECONDS,
+        "limit": CANDLE_LIMIT
     })
 
+
     url = (
-        "https://api.twelvedata.com/time_series?"
+        "https://otcharts.com/v1/candles?"
         + params
     )
 
 
-    try:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization":
+                "Bearer " + api_key,
 
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent":
-                    "Forex-Signal-Assistant/1.0"
-            }
+            "User-Agent":
+                "OTC-Signal-Assistant/1.0",
+
+            "Accept":
+                "application/json"
+        }
+    )
+
+
+    with urllib.request.urlopen(
+        request,
+        timeout=20
+    ) as response:
+
+        data = json.loads(
+            response.read().decode("utf-8")
         )
 
-        with urllib.request.urlopen(
-            request,
-            timeout=20
-        ) as response:
 
-            data = json.loads(
-                response.read().decode("utf-8")
-            )
+    candles = data.get("candles", [])
 
 
-        # ======================================
-        # API ERROR
-        # ======================================
-
-        if data.get("status") == "error":
-
-            return {
-                "success": False,
-                "error": data.get(
-                    "message",
-                    "Twelve Data error"
-                )
-            }, 502
+    if not candles:
+        raise Exception(
+            "No OTC candles returned"
+        )
 
 
-        candles = data.get("values", [])
+    # Make sure candles are chronological:
+    # oldest -> newest
+
+    candles.sort(
+        key=lambda candle:
+            int(candle["time"])
+    )
 
 
-        if not candles:
-
-            return {
-                "success": False,
-                "error": "No candle data returned"
-            }, 502
+    return candles, data
 
 
-        # Twelve Data returns newest -> oldest.
-        # Analysis.py needs oldest -> newest.
+# ======================================================
+# CONFIDENCE / SIGNAL STRENGTH
+# ======================================================
 
-        candles.reverse()
+def calculate_signal_strength(analysis):
 
+    confirmations = int(
+        analysis.get(
+            "confirmations",
+            0
+        )
+    )
+
+    total = int(
+        analysis.get(
+            "total_confirmations",
+            5
+        )
+    )
+
+
+    if total <= 0:
+        return 0
+
+
+    strength = round(
+        (confirmations / total) * 100
+    )
+
+
+    return max(
+        0,
+        min(100, strength)
+    )
+
+
+# ======================================================
+# OTC SIGNAL
+# ======================================================
+
+@app.route("/signal")
+@app.route("/test-otc")
+def otc_signal():
+
+    try:
+
+        candles, raw_data = (
+            get_otc_candles()
+        )
+
+
+        # ==============================================
+        # ENOUGH DATA?
+        # ==============================================
 
         if len(candles) < 35:
 
             return {
                 "success": False,
-                "error":
-                    "Not enough candles for analysis",
+                "signal": "WAIT",
+                "reason":
+                    "Not enough OTC candles",
                 "candles_received":
                     len(candles)
             }, 502
 
 
-        # ======================================
+        # ==============================================
         # LATEST CANDLE
-        # ======================================
+        # ==============================================
 
         latest_candle = candles[-1]
 
-        latest_candle_time = (
-            latest_candle.get("datetime")
+        latest_timestamp = int(
+            latest_candle["time"]
         )
 
 
-        if not latest_candle_time:
-
-            return {
-                "success": False,
-                "error":
-                    "Latest candle has no timestamp"
-            }, 502
-
-
-        # ======================================
-        # FRESHNESS CHECK
-        # ======================================
-
-        candle_datetime = datetime.strptime(
-            latest_candle_time,
-            "%Y-%m-%d %H:%M:%S"
-        ).replace(
-            tzinfo=timezone.utc
+        latest_datetime = (
+            datetime.fromtimestamp(
+                latest_timestamp,
+                tz=timezone.utc
+            )
         )
 
 
@@ -166,7 +223,8 @@ def test_forex():
 
 
         candle_age_seconds = (
-            current_utc - candle_datetime
+            current_utc -
+            latest_datetime
         ).total_seconds()
 
 
@@ -176,71 +234,139 @@ def test_forex():
         )
 
 
-        # Allow a little time for a 1-minute
-        # candle to finish and reach the API.
-        #
-        # More than 3 minutes old = stale.
+        # ==============================================
+        # FRESHNESS CHECK
+        # ==============================================
 
         data_fresh = (
-            0 <= candle_age_seconds <= 180
+            0 <= candle_age_seconds
+            <= MAX_CANDLE_AGE_SECONDS
         )
 
 
-        # ======================================
+        # ==============================================
         # ANALYSIS
-        # ======================================
+        # ==============================================
 
         analysis = analyze_candles(
             candles
         )
 
 
-        # ======================================
-        # STALE DATA SAFETY
-        # ======================================
+        signal = str(
+            analysis.get(
+                "signal",
+                "WAIT"
+            )
+        ).upper()
+
+
+        strength = (
+            calculate_signal_strength(
+                analysis
+            )
+        )
+
+
+        # ==============================================
+        # SAFETY CHECKS
+        # ==============================================
 
         if not data_fresh:
 
-            analysis["signal"] = "WAIT"
+            signal = "WAIT"
 
-            analysis["stale_data"] = True
+            reason = (
+                "OTC candle data is stale"
+            )
 
-            analysis["reason"] = (
-                "DATA STALE"
+        elif signal not in [
+            "BUY",
+            "SELL"
+        ]:
+
+            signal = "WAIT"
+
+            reason = (
+                "No strong BUY/SELL setup"
             )
 
         else:
 
-            analysis["stale_data"] = False
-
-            analysis["reason"] = (
-                "DATA FRESH"
+            reason = (
+                "Signal conditions confirmed"
             )
 
 
-        # ======================================
+        # ==============================================
+        # SIMPLE TELEGRAM-READY MESSAGE
+        # ==============================================
+
+        if signal in [
+            "BUY",
+            "SELL"
+        ]:
+
+            message = (
+                "EUR/USD OTC\n\n"
+                + signal
+                + "\n"
+                + "Signal strength: "
+                + str(strength)
+                + "%\n\n"
+                + "Expiry: 1 minute"
+            )
+
+        else:
+
+            # Telegram can use this value
+            # to remain silent.
+
+            message = None
+
+
+        # ==============================================
         # RESPONSE
-        # ======================================
+        # ==============================================
 
         return {
 
             "success": True,
 
-            "source": "Twelve Data",
+            "market":
+                "Pocket Option OTC",
 
-            "market": "Regular Forex",
+            "source":
+                "OTCharts",
 
-            "symbol": "EUR/USD",
+            "symbol":
+                OTC_SYMBOL,
 
-            "timeframe": "1 minute",
+            "timeframe":
+                "1 minute",
 
-            "timezone": "UTC",
+            "expiry_reference":
+                "1 minute",
 
-            "candles_received":
-                len(candles),
+            "signal":
+                signal,
 
-            "latest_candle_time":
-                latest_candle_time,
+            # This is signal strength,
+            # NOT guaranteed win probability.
+            "confidence":
+                strength,
+
+            "signal_strength":
+                strength,
+
+            "reason":
+                reason,
+
+            "data_fresh":
+                data_fresh,
+
+            "latest_candle_time_utc":
+                latest_datetime.isoformat(),
 
             "candle_age_seconds":
                 round(
@@ -251,14 +377,14 @@ def test_forex():
             "candle_age_minutes":
                 candle_age_minutes,
 
-            "data_fresh":
-                data_fresh,
+            "candles_received":
+                len(candles),
+
+            "message":
+                message,
 
             "analysis":
-                analysis,
-
-            "candles":
-                candles
+                analysis
         }
 
 
@@ -277,21 +403,41 @@ def test_forex():
 
 
         return {
+
             "success": False,
+
+            "signal": "WAIT",
+
+            "message": None,
+
             "http_status":
                 error.code,
+
             "error":
                 error_body
+
         }, 502
 
 
     except Exception as error:
 
         return {
+
             "success": False,
-            "error": str(error)
+
+            "signal": "WAIT",
+
+            "message": None,
+
+            "error":
+                str(error)
+
         }, 500
 
+
+# ======================================================
+# START SERVER
+# ======================================================
 
 if __name__ == "__main__":
 
@@ -301,6 +447,7 @@ if __name__ == "__main__":
             10000
         )
     )
+
 
     app.run(
         host="0.0.0.0",
