@@ -269,7 +269,7 @@ def test_forex():
             }, 502
 
         candles = data.get("values", [])
-candles.reverse()
+        candles.reverse()
 
         return {
             "success": True,
