@@ -4,16 +4,13 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+from datetime import datetime, timezone
 from flask import Flask
 from Analysis import analyze_candles
 
 
 app = Flask(__name__)
 
-
-# =========================================================
-# HOME
-# =========================================================
 
 @app.route("/")
 def home():
@@ -24,10 +21,6 @@ def home():
         "source": "Twelve Data"
     }
 
-
-# =========================================================
-# STATUS
-# =========================================================
 
 @app.route("/status")
 def status():
@@ -40,16 +33,11 @@ def status():
     }
 
 
-# =========================================================
-# EUR/USD FOREX DATA + ANALYSIS
-# =========================================================
-
 @app.route("/test-forex")
 def test_forex():
 
     api_key = os.environ.get(
-        "TWELVE_DATA_API_KEY",
-        ""
+        "TWELVE_DATA_API_KEY", ""
     ).strip()
 
     if not api_key:
@@ -59,14 +47,15 @@ def test_forex():
         }, 500
 
 
-    # -----------------------------------------------------
-    # Twelve Data request
-    # -----------------------------------------------------
+    # ==========================================
+    # TWELVE DATA REQUEST
+    # ==========================================
 
     params = urllib.parse.urlencode({
         "symbol": "EUR/USD",
         "interval": "1min",
         "outputsize": 50,
+        "timezone": "UTC",
         "apikey": api_key
     })
 
@@ -86,7 +75,6 @@ def test_forex():
             }
         )
 
-
         with urllib.request.urlopen(
             request,
             timeout=20
@@ -97,9 +85,9 @@ def test_forex():
             )
 
 
-        # -------------------------------------------------
-        # Twelve Data API error
-        # -------------------------------------------------
+        # ======================================
+        # API ERROR
+        # ======================================
 
         if data.get("status") == "error":
 
@@ -112,10 +100,6 @@ def test_forex():
             }, 502
 
 
-        # -------------------------------------------------
-        # Get candles
-        # -------------------------------------------------
-
         candles = data.get("values", [])
 
 
@@ -127,15 +111,11 @@ def test_forex():
             }, 502
 
 
-        # Twelve Data normally returns newest -> oldest.
-        # Our analysis requires oldest -> newest.
+        # Twelve Data returns newest -> oldest.
+        # Analysis.py needs oldest -> newest.
 
         candles.reverse()
 
-
-        # -------------------------------------------------
-        # Make sure enough candles exist
-        # -------------------------------------------------
 
         if len(candles) < 35:
 
@@ -148,9 +128,9 @@ def test_forex():
             }, 502
 
 
-        # -------------------------------------------------
-        # Latest candle information
-        # -------------------------------------------------
+        # ======================================
+        # LATEST CANDLE
+        # ======================================
 
         latest_candle = candles[-1]
 
@@ -159,18 +139,88 @@ def test_forex():
         )
 
 
-        # -------------------------------------------------
-        # Run technical analysis
-        # -------------------------------------------------
+        if not latest_candle_time:
+
+            return {
+                "success": False,
+                "error":
+                    "Latest candle has no timestamp"
+            }, 502
+
+
+        # ======================================
+        # FRESHNESS CHECK
+        # ======================================
+
+        candle_datetime = datetime.strptime(
+            latest_candle_time,
+            "%Y-%m-%d %H:%M:%S"
+        ).replace(
+            tzinfo=timezone.utc
+        )
+
+
+        current_utc = datetime.now(
+            timezone.utc
+        )
+
+
+        candle_age_seconds = (
+            current_utc - candle_datetime
+        ).total_seconds()
+
+
+        candle_age_minutes = round(
+            candle_age_seconds / 60,
+            2
+        )
+
+
+        # Allow a little time for a 1-minute
+        # candle to finish and reach the API.
+        #
+        # More than 3 minutes old = stale.
+
+        data_fresh = (
+            0 <= candle_age_seconds <= 180
+        )
+
+
+        # ======================================
+        # ANALYSIS
+        # ======================================
 
         analysis = analyze_candles(
             candles
         )
 
 
-        # -------------------------------------------------
-        # Successful response
-        # -------------------------------------------------
+        # ======================================
+        # STALE DATA SAFETY
+        # ======================================
+
+        if not data_fresh:
+
+            analysis["signal"] = "WAIT"
+
+            analysis["stale_data"] = True
+
+            analysis["reason"] = (
+                "DATA STALE"
+            )
+
+        else:
+
+            analysis["stale_data"] = False
+
+            analysis["reason"] = (
+                "DATA FRESH"
+            )
+
+
+        # ======================================
+        # RESPONSE
+        # ======================================
 
         return {
 
@@ -184,11 +234,25 @@ def test_forex():
 
             "timeframe": "1 minute",
 
+            "timezone": "UTC",
+
             "candles_received":
                 len(candles),
 
             "latest_candle_time":
                 latest_candle_time,
+
+            "candle_age_seconds":
+                round(
+                    candle_age_seconds,
+                    1
+                ),
+
+            "candle_age_minutes":
+                candle_age_minutes,
+
+            "data_fresh":
+                data_fresh,
 
             "analysis":
                 analysis,
@@ -198,18 +262,17 @@ def test_forex():
         }
 
 
-    # -----------------------------------------------------
-    # HTTP error
-    # -----------------------------------------------------
-
     except urllib.error.HTTPError as error:
 
         try:
+
             error_body = (
                 error.read()
                 .decode("utf-8")
             )
+
         except Exception:
+
             error_body = str(error)
 
 
@@ -222,10 +285,6 @@ def test_forex():
         }, 502
 
 
-    # -----------------------------------------------------
-    # Other errors
-    # -----------------------------------------------------
-
     except Exception as error:
 
         return {
@@ -233,10 +292,6 @@ def test_forex():
             "error": str(error)
         }, 500
 
-
-# =========================================================
-# START SERVER
-# =========================================================
 
 if __name__ == "__main__":
 
