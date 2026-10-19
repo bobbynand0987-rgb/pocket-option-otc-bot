@@ -4,7 +4,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 from Analysis import analyze_candles
 
@@ -17,11 +17,27 @@ app = Flask(__name__)
 # ======================================================
 
 OTC_SYMBOL = "EURUSD_otc"
+
 TIMEFRAME_SECONDS = 60
+
 CANDLE_LIMIT = 50
 
-# Maximum acceptable age of latest candle.
+# Do not use candles older than this.
 MAX_CANDLE_AGE_SECONDS = 180
+
+# Your current OTCharts timestamps are appearing
+# approximately 2 hours ahead of actual UTC.
+#
+# Default correction = -2 hours.
+#
+# This can later be changed in Render using:
+# OTCHARTS_TIME_OFFSET_HOURS
+OTCHARTS_TIME_OFFSET_HOURS = float(
+    os.environ.get(
+        "OTCHARTS_TIME_OFFSET_HOURS",
+        "-2"
+    )
+)
 
 
 # ======================================================
@@ -30,12 +46,21 @@ MAX_CANDLE_AGE_SECONDS = 180
 
 @app.route("/")
 def home():
+
     return {
+
         "status": "online",
-        "bot": "OTC Signal Assistant",
+
+        "bot": "Pocket Option OTC Signal Assistant",
+
         "market": "Pocket Option OTC",
+
         "symbol": OTC_SYMBOL,
+
         "timeframe": "1 minute",
+
+        "expiry_reference": "1 minute",
+
         "source": "OTCharts"
     }
 
@@ -46,11 +71,21 @@ def home():
 
 @app.route("/status")
 def status():
+
     return {
+
         "status": "online",
+
         "market": "Pocket Option OTC",
+
+        "pair": "EUR/USD OTC",
+
         "symbol": OTC_SYMBOL,
+
         "timeframe": "1 minute",
+
+        "expiry_reference": "1 minute",
+
         "source": "OTCharts"
     }
 
@@ -62,19 +97,26 @@ def status():
 def get_otc_candles():
 
     api_key = os.environ.get(
-        "OTCHARTS_API_KEY", ""
+        "OTCHARTS_API_KEY",
+        ""
     ).strip()
 
+
     if not api_key:
+
         raise Exception(
             "OTCHARTS_API_KEY is missing"
         )
 
 
     params = urllib.parse.urlencode({
+
         "venue": "otc",
+
         "symbol": OTC_SYMBOL,
+
         "tf": TIMEFRAME_SECONDS,
+
         "limit": CANDLE_LIMIT
     })
 
@@ -86,8 +128,11 @@ def get_otc_candles():
 
 
     request = urllib.request.Request(
+
         url,
+
         headers={
+
             "Authorization":
                 "Bearer " + api_key,
 
@@ -105,37 +150,209 @@ def get_otc_candles():
         timeout=20
     ) as response:
 
-        data = json.loads(
-            response.read().decode("utf-8")
+        body = (
+            response
+            .read()
+            .decode("utf-8")
         )
 
+        data = json.loads(body)
 
-    candles = data.get("candles", [])
+
+    candles = data.get(
+        "candles",
+        []
+    )
 
 
     if not candles:
+
         raise Exception(
             "No OTC candles returned"
         )
 
 
-    # Make sure candles are chronological:
+    # ==================================================
+    # VALIDATE CANDLES
+    # ==================================================
+
+    valid_candles = []
+
+
+    for candle in candles:
+
+        try:
+
+            clean_candle = {
+
+                "time":
+                    int(candle["time"]),
+
+                "open":
+                    float(candle["open"]),
+
+                "high":
+                    float(candle["high"]),
+
+                "low":
+                    float(candle["low"]),
+
+                "close":
+                    float(candle["close"])
+            }
+
+
+            valid_candles.append(
+                clean_candle
+            )
+
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError
+        ):
+
+            continue
+
+
+    if len(valid_candles) < 35:
+
+        raise Exception(
+            "Not enough valid OTC candles"
+        )
+
+
+    # Analysis.py requires:
     # oldest -> newest
 
-    candles.sort(
+    valid_candles.sort(
         key=lambda candle:
-            int(candle["time"])
+            candle["time"]
     )
 
 
-    return candles, data
+    return valid_candles
 
 
 # ======================================================
-# CONFIDENCE / SIGNAL STRENGTH
+# CHECK FOR CANDLE GAPS
 # ======================================================
 
-def calculate_signal_strength(analysis):
+def check_candle_gaps(candles):
+
+    gaps = []
+
+
+    for i in range(
+        1,
+        len(candles)
+    ):
+
+        previous_time = int(
+            candles[i - 1]["time"]
+        )
+
+        current_time = int(
+            candles[i]["time"]
+        )
+
+        difference = (
+            current_time
+            - previous_time
+        )
+
+
+        # Normal 1-minute difference = 60 seconds.
+
+        if difference != TIMEFRAME_SECONDS:
+
+            gaps.append({
+
+                "index": i,
+
+                "difference_seconds":
+                    difference
+            })
+
+
+    return gaps
+
+
+# ======================================================
+# CONVERT OTCHARTS TIME
+# ======================================================
+
+def convert_otcharts_time(
+    timestamp
+):
+
+    raw_datetime = (
+        datetime.fromtimestamp(
+            int(timestamp),
+            tz=timezone.utc
+        )
+    )
+
+
+    corrected_datetime = (
+        raw_datetime
+        + timedelta(
+            hours=
+                OTCHARTS_TIME_OFFSET_HOURS
+        )
+    )
+
+
+    return (
+        raw_datetime,
+        corrected_datetime
+    )
+
+
+# ======================================================
+# SIGNAL CONFIDENCE
+# ======================================================
+
+def get_confidence(
+    analysis
+):
+
+    # Prefer the confidence generated
+    # directly by Analysis.py.
+
+    if (
+        analysis.get("confidence")
+        is not None
+    ):
+
+        try:
+
+            confidence = int(
+                round(
+                    float(
+                        analysis["confidence"]
+                    )
+                )
+            )
+
+            return max(
+                0,
+                min(
+                    100,
+                    confidence
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            pass
+
+
+    # Fallback calculation.
 
     confirmations = int(
         analysis.get(
@@ -143,6 +360,7 @@ def calculate_signal_strength(analysis):
             0
         )
     )
+
 
     total = int(
         analysis.get(
@@ -153,22 +371,50 @@ def calculate_signal_strength(analysis):
 
 
     if total <= 0:
+
         return 0
 
 
-    strength = round(
-        (confirmations / total) * 100
+    confidence = round(
+        (
+            confirmations
+            / total
+        )
+        * 100
     )
 
 
     return max(
         0,
-        min(100, strength)
+        min(
+            100,
+            confidence
+        )
     )
 
 
 # ======================================================
-# OTC SIGNAL
+# CREATE SIMPLE MESSAGE
+# ======================================================
+
+def create_signal_message(
+    signal,
+    confidence
+):
+
+    return (
+        "EUR/USD OTC\n\n"
+        + signal
+        + "\n"
+        + "Confidence: "
+        + str(confidence)
+        + "%\n\n"
+        + "Expiry: 1 minute"
+    )
+
+
+# ======================================================
+# MAIN OTC SIGNAL
 # ======================================================
 
 @app.route("/signal")
@@ -177,152 +423,205 @@ def otc_signal():
 
     try:
 
-        candles, raw_data = (
+        # ==============================================
+        # DOWNLOAD CANDLES
+        # ==============================================
+
+        candles = (
             get_otc_candles()
         )
 
 
         # ==============================================
-        # ENOUGH DATA?
+        # CHECK CANDLE GAPS
         # ==============================================
 
-        if len(candles) < 35:
-
-            return {
-                "success": False,
-                "signal": "WAIT",
-                "reason":
-                    "Not enough OTC candles",
-                "candles_received":
-                    len(candles)
-            }, 502
+        gaps = (
+            check_candle_gaps(
+                candles
+            )
+        )
 
 
         # ==============================================
         # LATEST CANDLE
         # ==============================================
 
-        latest_candle = candles[-1]
+        latest_candle = (
+            candles[-1]
+        )
+
 
         latest_timestamp = int(
             latest_candle["time"]
         )
 
 
-        latest_datetime = (
-            datetime.fromtimestamp(
-                latest_timestamp,
-                tz=timezone.utc
+        (
+            raw_datetime,
+            corrected_datetime
+        ) = convert_otcharts_time(
+            latest_timestamp
+        )
+
+
+        current_utc = (
+            datetime.now(
+                timezone.utc
             )
         )
 
 
-        current_utc = datetime.now(
-            timezone.utc
-        )
-
+        # ==============================================
+        # CANDLE AGE
+        # ==============================================
 
         candle_age_seconds = (
-            current_utc -
-            latest_datetime
+
+            current_utc
+
+            - corrected_datetime
+
         ).total_seconds()
 
 
         candle_age_minutes = round(
-            candle_age_seconds / 60,
+
+            candle_age_seconds
+            / 60,
+
             2
         )
 
 
         # ==============================================
-        # FRESHNESS CHECK
+        # FRESHNESS
         # ==============================================
 
         data_fresh = (
-            0 <= candle_age_seconds
+
+            0
+            <= candle_age_seconds
             <= MAX_CANDLE_AGE_SECONDS
+
         )
 
 
         # ==============================================
-        # ANALYSIS
+        # TECHNICAL ANALYSIS
         # ==============================================
 
-        analysis = analyze_candles(
-            candles
+        analysis = (
+            analyze_candles(
+                candles
+            )
         )
 
 
         signal = str(
             analysis.get(
                 "signal",
-                "WAIT"
+                ""
             )
         ).upper()
 
 
-        strength = (
-            calculate_signal_strength(
+        confidence = (
+            get_confidence(
                 analysis
             )
         )
 
 
         # ==============================================
-        # SAFETY CHECKS
+        # VALIDATE DIRECTION
         # ==============================================
 
-        if not data_fresh:
-
-            signal = "WAIT"
-
-            reason = (
-                "OTC candle data is stale"
-            )
-
-        elif signal not in [
+        if signal not in [
             "BUY",
             "SELL"
         ]:
 
-            signal = "WAIT"
+            # Emergency fallback.
+            #
+            # Analysis.py should already always
+            # produce BUY or SELL.
 
-            reason = (
-                "No strong BUY/SELL setup"
+            buy_score = int(
+                analysis.get(
+                    "buy_score",
+                    0
+                )
             )
 
-        else:
-
-            reason = (
-                "Signal conditions confirmed"
+            sell_score = int(
+                analysis.get(
+                    "sell_score",
+                    0
+                )
             )
+
+
+            if buy_score >= sell_score:
+
+                signal = "BUY"
+
+            else:
+
+                signal = "SELL"
 
 
         # ==============================================
-        # SIMPLE TELEGRAM-READY MESSAGE
+        # DATA SAFETY
         # ==============================================
 
-        if signal in [
-            "BUY",
-            "SELL"
-        ]:
+        usable_data = (
+            data_fresh
+            and len(gaps) == 0
+        )
+
+
+        if usable_data:
 
             message = (
-                "EUR/USD OTC\n\n"
-                + signal
-                + "\n"
-                + "Signal strength: "
-                + str(strength)
-                + "%\n\n"
-                + "Expiry: 1 minute"
+                create_signal_message(
+                    signal,
+                    confidence
+                )
             )
+
+            reason = (
+                "OTC data valid"
+            )
+
 
         else:
 
-            # Telegram can use this value
-            # to remain silent.
+            # We still return the technical direction
+            # for debugging, but do NOT create a
+            # Telegram trading message from stale/
+            # broken candle data.
 
             message = None
+
+
+            if not data_fresh:
+
+                reason = (
+                    "OTC candle freshness check failed"
+                )
+
+            elif len(gaps) > 0:
+
+                reason = (
+                    "OTC candle gaps detected"
+                )
+
+            else:
+
+                reason = (
+                    "OTC data unavailable"
+                )
 
 
         # ==============================================
@@ -331,7 +630,8 @@ def otc_signal():
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "market":
                 "Pocket Option OTC",
@@ -351,22 +651,35 @@ def otc_signal():
             "signal":
                 signal,
 
-            # This is signal strength,
-            # NOT guaranteed win probability.
             "confidence":
-                strength,
+                confidence,
 
-            "signal_strength":
-                strength,
+            "confidence_type":
+                "signal strength",
 
-            "reason":
-                reason,
+            "usable_data":
+                usable_data,
 
             "data_fresh":
                 data_fresh,
 
-            "latest_candle_time_utc":
-                latest_datetime.isoformat(),
+            "reason":
+                reason,
+
+            "candles_received":
+                len(candles),
+
+            "candle_gaps":
+                len(gaps),
+
+            "raw_otcharts_time":
+                raw_datetime.isoformat(),
+
+            "corrected_candle_time_utc":
+                corrected_datetime.isoformat(),
+
+            "current_time_utc":
+                current_utc.isoformat(),
 
             "candle_age_seconds":
                 round(
@@ -377,8 +690,8 @@ def otc_signal():
             "candle_age_minutes":
                 candle_age_minutes,
 
-            "candles_received":
-                len(candles),
+            "timestamp_offset_hours":
+                OTCHARTS_TIME_OFFSET_HOURS,
 
             "message":
                 message,
@@ -388,27 +701,34 @@ def otc_signal():
         }
 
 
+    # ==================================================
+    # HTTP ERROR
+    # ==================================================
+
     except urllib.error.HTTPError as error:
 
         try:
 
             error_body = (
-                error.read()
+                error
+                .read()
                 .decode("utf-8")
             )
 
         except Exception:
 
-            error_body = str(error)
+            error_body = str(
+                error
+            )
 
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
-            "signal": "WAIT",
-
-            "message": None,
+            "message":
+                None,
 
             "http_status":
                 error.code,
@@ -419,15 +739,19 @@ def otc_signal():
         }, 502
 
 
+    # ==================================================
+    # OTHER ERROR
+    # ==================================================
+
     except Exception as error:
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
-            "signal": "WAIT",
-
-            "message": None,
+            "message":
+                None,
 
             "error":
                 str(error)
@@ -442,6 +766,7 @@ def otc_signal():
 if __name__ == "__main__":
 
     port = int(
+
         os.environ.get(
             "PORT",
             10000
@@ -450,6 +775,8 @@ if __name__ == "__main__":
 
 
     app.run(
+
         host="0.0.0.0",
+
         port=port
     )
