@@ -4,6 +4,7 @@ import re
 import urllib.request
 import urllib.error
 
+from Analysis import analyze_candles
 from flask import Flask
 from pocketoptionapi.stable_api import PocketOption
 from pocketoptionapi.ws.client import WebsocketClient
@@ -270,8 +271,11 @@ def test_forex():
 
         candles = data.get("values", [])
         candles.reverse()
-
+        
+        analysis = analyze_candles(candles)
+        
         return {
+            "analysis": analysis,
             "success": True,
             "source": "Twelve Data",
             "symbol": "EUR/USD",
