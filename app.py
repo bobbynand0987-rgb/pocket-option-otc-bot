@@ -20,7 +20,7 @@ OTC_SYMBOL = "EURUSD_otc"
 
 TIMEFRAME_SECONDS = 60
 
-CANDLE_LIMIT = 50
+CANDLE_LIMIT = 1000
 
 # Do not use candles older than this.
 MAX_CANDLE_AGE_SECONDS = 180
