@@ -240,7 +240,51 @@ def check_auth_format():
             "error": str(error)
         }, 400
 
+@app.route("/test-forex")
+def test_forex():
+    api_key = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
 
+    if not api_key:
+        return {
+            "success": False,
+            "error": "TWELVE_DATA_API_KEY is missing"
+        }, 500
+
+    url = (
+        "https://api.twelvedata.com/time_series"
+        "?symbol=EUR/USD"
+        "&interval=1min"
+        "&outputsize=5"
+        "&apikey=" + api_key
+    )
+
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        if data.get("status") == "error":
+            return {
+                "success": False,
+                "error": data.get("message", "Twelve Data error")
+            }, 502
+
+        candles = data.get("values", [])
+
+        return {
+            "success": True,
+            "source": "Twelve Data",
+            "symbol": "EUR/USD",
+            "timeframe": "1 minute",
+            "candles_received": len(candles),
+            "candles": candles
+        }
+
+    except Exception as error:
+        return {
+            "success": False,
+            "error": str(error)
+        }, 500
+        
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
